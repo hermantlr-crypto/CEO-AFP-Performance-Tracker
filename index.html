@@ -259,9 +259,21 @@
       </div>
       <div class="modal-body">
         <label style="display: block; font-size: 13px; margin-bottom: 6px;">Google Sheets API URL</label>
-        <input type="text" id="settings-api-url" readonly style="width: 100%; padding: 12px; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; background: rgba(255,255,255,0.05); color: #e8e8e8; margin-bottom: 8px;">
-        <button onclick="copyApiUrl()" style="width: 100%; padding: 10px; background: rgba(79,172,254,0.2); border: none; border-radius: 8px; color: #4facfe; cursor: pointer; margin-bottom: 16px;">📋 Copy URL</button>
-        <p style="font-size: 11px; opacity: 0.5; margin-bottom: 16px;">Copy this URL and paste it on your other devices to sync data.</p>
+        <input type="text" id="settings-api-url" placeholder="Paste your Google Apps Script Web App URL here..." style="width: 100%; padding: 12px; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; background: rgba(255,255,255,0.05); color: #e8e8e8; margin-bottom: 8px;">
+        <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+          <button onclick="saveApiUrl()" style="flex: 1; padding: 10px; background: rgba(39,174,96,0.3); border: none; border-radius: 8px; color: #27ae60; cursor: pointer;">💾 Save URL</button>
+          <button onclick="copyApiUrl()" style="flex: 1; padding: 10px; background: rgba(79,172,254,0.2); border: none; border-radius: 8px; color: #4facfe; cursor: pointer;">📋 Copy URL</button>
+        </div>
+        <p style="font-size: 11px; opacity: 0.5; margin-bottom: 16px;">Paste the Web App URL from Google Apps Script, then click Save.</p>
+        
+        <div style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 16px; margin-bottom: 16px;">
+          <h4 style="font-size: 14px; margin-bottom: 12px;">🔄 Server Sync</h4>
+          <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+            <button onclick="pushToServer()" style="flex: 1; padding: 10px; background: rgba(79,172,254,0.2); border: none; border-radius: 8px; color: #4facfe; cursor: pointer;">⬆️ Push to Server</button>
+            <button onclick="pullFromServer()" style="flex: 1; padding: 10px; background: rgba(39,174,96,0.2); border: none; border-radius: 8px; color: #27ae60; cursor: pointer;">⬇️ Pull from Server</button>
+          </div>
+          <p style="font-size: 11px; opacity: 0.5;">Push sends your local data to Google Sheets. Pull overwrites local with server data.</p>
+        </div>
         
         <div style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 16px; margin-bottom: 16px;">
           <h4 style="font-size: 14px; margin-bottom: 12px;">📦 Backup & Restore Data</h4>
@@ -969,6 +981,7 @@ function mergeKeyResults(localKRs, serverKRs) {
 
 async function syncData() {
   if (!API_URL) {
+    console.log('No API URL set, loading local data only');
     loadLocal();
     updateSyncStatus('offline');
     return;
@@ -984,11 +997,16 @@ async function syncData() {
   const localFolders = JSON.parse(JSON.stringify(data.folders || []));
   const localExpenses = JSON.parse(JSON.stringify(data.expenses || []));
   
+  console.log('Local data before sync:', { okrs: localOKRs.length, events: localEvents.length });
+  
   updateSyncStatus('syncing');
   
   try {
+    console.log('Fetching from:', API_URL + '?action=getData');
     const response = await fetch(API_URL + '?action=getData');
     const result = await response.json();
+    
+    console.log('Server response:', result);
     
     if (result.error) throw new Error(result.error);
     
@@ -1003,6 +1021,8 @@ async function syncData() {
       attachments: o.attachments || [],
       keyresults: o.keyresults || []
     }));
+    
+    console.log('Server OKRs mapped:', serverOKRs.length, serverOKRs);
     
     // Merge OKRs: prefer local progress/notes, but get any new OKRs from server
     if (serverOKRs.length > 0 && localOKRs.length > 0) {
@@ -1253,8 +1273,19 @@ function changeUser() {
 }
 
 function showAppSettings() {
-  document.getElementById('settings-api-url').value = API_URL || '(not connected)';
+  document.getElementById('settings-api-url').value = API_URL || '';
   document.getElementById('app-settings-modal').classList.add('active');
+}
+
+function saveApiUrl() {
+  const url = document.getElementById('settings-api-url').value.trim();
+  if (url && !url.startsWith('https://script.google.com/')) {
+    alert('Invalid URL. It should start with https://script.google.com/');
+    return;
+  }
+  API_URL = url;
+  localStorage.setItem('api_url', url);
+  alert(url ? '✅ API URL saved! Click "Pull from Server" to get your data.' : 'API URL cleared.');
 }
 
 function copyApiUrl() {
@@ -1266,9 +1297,94 @@ function copyApiUrl() {
   navigator.clipboard.writeText(url).then(() => {
     alert('URL copied! Paste this on your other devices.');
   }).catch(() => {
-    // Fallback for older browsers
     prompt('Copy this URL:', url);
   });
+}
+
+async function pushToServer() {
+  if (!API_URL) {
+    alert('No API URL set. Please connect to Google Sheets first.');
+    return;
+  }
+  
+  if (!confirm('This will push all your local data to Google Sheets, overwriting server data. Continue?')) return;
+  
+  try {
+    const response = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'syncAll',
+        okrs: data.okrs,
+        events: data.events,
+        notes: data.notes,
+        folders: data.folders,
+        expenses: data.expenses,
+        user: currentUser
+      })
+    });
+    
+    const result = await response.json();
+    console.log('Push result:', result);
+    
+    if (result.error) throw new Error(result.error);
+    
+    alert('✅ Data pushed to server successfully!');
+    updateSyncStatus('online');
+  } catch (error) {
+    console.error('Push error:', error);
+    alert('❌ Error pushing data: ' + error.message);
+  }
+}
+
+async function pullFromServer() {
+  if (!API_URL) {
+    alert('No API URL set. Please connect to Google Sheets first.');
+    return;
+  }
+  
+  if (!confirm('This will overwrite your local data with server data. Continue?')) return;
+  
+  try {
+    console.log('Pulling from server...');
+    const response = await fetch(API_URL + '?action=getData');
+    const result = await response.json();
+    
+    console.log('Pull result:', result);
+    
+    if (result.error) throw new Error(result.error);
+    
+    // Overwrite local data with server data
+    data.okrs = (result.okrs || []).map(o => ({
+      id: o.id,
+      category: o.category,
+      weight: o.weight,
+      objective: o.objective,
+      color: o.color,
+      notes: o.notes || '',
+      attachments: o.attachments || [],
+      keyresults: (o.keyresults || []).map(kr => ({
+        ...kr,
+        items: kr.items || [],
+        notes: kr.notes || '',
+        attachments: kr.attachments || []
+      }))
+    }));
+    
+    data.events = result.events || [];
+    data.notes = result.notes || [];
+    data.folders = result.folders || [];
+    data.expenses = result.expenses || [];
+    
+    saveLocal();
+    render();
+    
+    alert(`✅ Pulled ${data.okrs.length} OKRs from server!`);
+    updateSyncStatus('online');
+  } catch (error) {
+    console.error('Pull error:', error);
+    alert('❌ Error pulling data: ' + error.message);
+  }
 }
 
 function resetApp() {
