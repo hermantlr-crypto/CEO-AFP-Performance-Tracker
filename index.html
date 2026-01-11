@@ -1312,44 +1312,79 @@ async function pushToServer() {
   try {
     updateSyncStatus('syncing');
     
+    // Create deep copy to ensure all nested data is included
     const payload = {
       action: 'syncAll',
-      okrs: data.okrs,
-      events: data.events,
-      notes: data.notes,
-      folders: data.folders,
-      expenses: data.expenses,
+      okrs: JSON.parse(JSON.stringify(data.okrs)),
+      events: JSON.parse(JSON.stringify(data.events || [])),
+      notes: JSON.parse(JSON.stringify(data.notes || [])),
+      folders: JSON.parse(JSON.stringify(data.folders || [])),
+      expenses: JSON.parse(JSON.stringify(data.expenses || [])),
       user: currentUser
     };
     
     console.log('Pushing data:', payload);
+    console.log('OKR 1 KR 3 items:', payload.okrs[0]?.keyresults?.[2]?.items);
     
-    // Create a hidden iframe to submit data (bypasses CORS)
-    const iframe = document.createElement('iframe');
-    iframe.name = 'push_frame';
-    iframe.style.display = 'none';
-    document.body.appendChild(iframe);
+    // Try direct fetch first (works if CORS is properly configured)
+    try {
+      const response = await fetch(API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'text/plain'
+        },
+        body: JSON.stringify(payload)
+      });
+      
+      const result = await response.json();
+      console.log('Push result:', result);
+      
+      if (result.success) {
+        alert('✅ Data pushed successfully! (' + payload.okrs.length + ' OKRs, ' + payload.folders.length + ' folders)');
+        updateSyncStatus('online');
+        return;
+      }
+    } catch (fetchError) {
+      console.log('Direct fetch failed, trying alternative method...', fetchError);
+    }
     
-    // Create a form to submit
-    const form = document.createElement('form');
-    form.method = 'POST';
-    form.action = API_URL;
-    form.target = 'push_frame';
+    // Fallback: Use image beacon approach for CORS-restricted environments
+    const jsonData = encodeURIComponent(JSON.stringify(payload));
     
-    const input = document.createElement('input');
-    input.type = 'hidden';
-    input.name = 'data';
-    input.value = JSON.stringify(payload);
-    form.appendChild(input);
-    
-    document.body.appendChild(form);
-    form.submit();
-    
-    // Clean up after a delay
-    setTimeout(() => {
-      document.body.removeChild(form);
-      document.body.removeChild(iframe);
-    }, 3000);
+    // Split into chunks if too large (URL limit ~2000 chars)
+    if (jsonData.length < 1900) {
+      // Small enough to send via GET
+      const img = new Image();
+      img.src = API_URL + '?push=1&data=' + jsonData;
+    } else {
+      // Use iframe POST for larger data
+      const iframe = document.createElement('iframe');
+      iframe.name = 'push_frame_' + Date.now();
+      iframe.style.display = 'none';
+      document.body.appendChild(iframe);
+      
+      const form = document.createElement('form');
+      form.method = 'POST';
+      form.action = API_URL;
+      form.target = iframe.name;
+      form.enctype = 'application/x-www-form-urlencoded';
+      
+      const input = document.createElement('textarea');
+      input.name = 'data';
+      input.value = JSON.stringify(payload);
+      input.style.display = 'none';
+      form.appendChild(input);
+      
+      document.body.appendChild(form);
+      form.submit();
+      
+      setTimeout(() => {
+        try {
+          document.body.removeChild(form);
+          document.body.removeChild(iframe);
+        } catch(e) {}
+      }, 5000);
+    }
     
     // Wait then verify
     await new Promise(r => setTimeout(r, 3000));
@@ -1357,8 +1392,17 @@ async function pushToServer() {
     try {
       const checkResponse = await fetch(API_URL + '?action=getData');
       const checkResult = await checkResponse.json();
+      
+      // Check if items were saved
+      const savedItems = checkResult.okrs?.[0]?.keyresults?.[2]?.items || [];
+      console.log('Verified saved items:', savedItems);
+      
       if (checkResult.okrs && checkResult.okrs.length > 0) {
-        alert('✅ Data pushed to server! (' + checkResult.okrs.length + ' OKRs saved)');
+        if (savedItems.length > 0) {
+          alert('✅ Data pushed with all items! (' + checkResult.okrs.length + ' OKRs saved)');
+        } else {
+          alert('✅ Data pushed! (' + checkResult.okrs.length + ' OKRs saved)\nNote: Verify items in Google Sheet.');
+        }
         updateSyncStatus('online');
       } else {
         alert('⚠️ Push sent but could not verify. Check your Google Sheet.');
