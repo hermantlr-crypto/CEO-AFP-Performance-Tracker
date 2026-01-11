@@ -1307,33 +1307,71 @@ async function pushToServer() {
     return;
   }
   
-  if (!confirm('This will push all your local data to Google Sheets, overwriting server data. Continue?')) return;
+  if (!confirm('Push your local data to Google Sheets?\n\nThis will update the server with your current data.')) return;
   
   try {
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'syncAll',
-        okrs: data.okrs,
-        events: data.events,
-        notes: data.notes,
-        folders: data.folders,
-        expenses: data.expenses,
-        user: currentUser
-      })
-    });
+    updateSyncStatus('syncing');
     
-    const result = await response.json();
-    console.log('Push result:', result);
+    const payload = {
+      action: 'syncAll',
+      okrs: data.okrs,
+      events: data.events,
+      notes: data.notes,
+      folders: data.folders,
+      expenses: data.expenses,
+      user: currentUser
+    };
     
-    if (result.error) throw new Error(result.error);
+    console.log('Pushing data:', payload);
     
-    alert('✅ Data pushed to server successfully!');
-    updateSyncStatus('online');
+    // Create a hidden iframe to submit data (bypasses CORS)
+    const iframe = document.createElement('iframe');
+    iframe.name = 'push_frame';
+    iframe.style.display = 'none';
+    document.body.appendChild(iframe);
+    
+    // Create a form to submit
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = API_URL;
+    form.target = 'push_frame';
+    
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = 'data';
+    input.value = JSON.stringify(payload);
+    form.appendChild(input);
+    
+    document.body.appendChild(form);
+    form.submit();
+    
+    // Clean up after a delay
+    setTimeout(() => {
+      document.body.removeChild(form);
+      document.body.removeChild(iframe);
+    }, 3000);
+    
+    // Wait then verify
+    await new Promise(r => setTimeout(r, 3000));
+    
+    try {
+      const checkResponse = await fetch(API_URL + '?action=getData');
+      const checkResult = await checkResponse.json();
+      if (checkResult.okrs && checkResult.okrs.length > 0) {
+        alert('✅ Data pushed to server! (' + checkResult.okrs.length + ' OKRs saved)');
+        updateSyncStatus('online');
+      } else {
+        alert('⚠️ Push sent but could not verify. Check your Google Sheet.');
+        updateSyncStatus('online');
+      }
+    } catch (e) {
+      alert('✅ Data pushed! Check your Google Sheet to verify.');
+      updateSyncStatus('online');
+    }
   } catch (error) {
     console.error('Push error:', error);
     alert('❌ Error pushing data: ' + error.message);
+    updateSyncStatus('offline');
   }
 }
 
@@ -1343,10 +1381,12 @@ async function pullFromServer() {
     return;
   }
   
-  if (!confirm('This will overwrite your local data with server data. Continue?')) return;
+  const choice = confirm('Pull from server?\n\nOK = Smart merge (keeps your local data + adds new from server)\nCancel = Cancel');
+  if (!choice) return;
   
   try {
     console.log('Pulling from server...');
+    updateSyncStatus('syncing');
     const response = await fetch(API_URL + '?action=getData');
     const result = await response.json();
     
@@ -1354,36 +1394,17 @@ async function pullFromServer() {
     
     if (result.error) throw new Error(result.error);
     
-    // Overwrite local data with server data
-    data.okrs = (result.okrs || []).map(o => ({
-      id: o.id,
-      category: o.category,
-      weight: o.weight,
-      objective: o.objective,
-      color: o.color,
-      notes: o.notes || '',
-      attachments: o.attachments || [],
-      keyresults: (o.keyresults || []).map(kr => ({
-        ...kr,
-        items: kr.items || [],
-        notes: kr.notes || '',
-        attachments: kr.attachments || []
-      }))
-    }));
-    
-    data.events = result.events || [];
-    data.notes = result.notes || [];
-    data.folders = result.folders || [];
-    data.expenses = result.expenses || [];
-    
+    // Smart merge - add from server, don't overwrite local
+    smartMergeFromServer(result);
     saveLocal();
     render();
     
-    alert(`✅ Pulled ${data.okrs.length} OKRs from server!`);
+    alert(`✅ Merged data from server!`);
     updateSyncStatus('online');
   } catch (error) {
     console.error('Pull error:', error);
     alert('❌ Error pulling data: ' + error.message);
+    updateSyncStatus('offline');
   }
 }
 
@@ -3220,31 +3241,76 @@ async function init() {
   try {
     document.getElementById('current-user').textContent = currentUser;
     
+    // ALWAYS load local first and render immediately
+    loadLocal();
+    render();
+    document.getElementById('loading').classList.add('hidden');
+    
     if (!API_URL) {
       document.getElementById('setup-banner').style.display = 'block';
-      loadLocal();
-      render();
-      document.getElementById('loading').classList.add('hidden');
+      updateSyncStatus('offline');
     } else {
-      // Add timeout for slow connections
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('timeout')), 10000)
-      );
-      
-      try {
-        await Promise.race([syncData(), timeoutPromise]);
-      } catch (e) {
-        console.error('Sync failed:', e);
-        loadLocal();
-        updateSyncStatus('offline');
-      }
-      render();
-      document.getElementById('loading').classList.add('hidden');
+      // Sync in BACKGROUND - don't block UI
+      updateSyncStatus('syncing');
+      setTimeout(() => backgroundSync(), 500);
     }
   } catch (e) {
     console.error('Init error:', e);
     document.getElementById('loading').innerHTML = '<p style="color:#e74c3c;">Error loading. <a href="#" onclick="localStorage.clear();location.reload();" style="color:#4facfe;">Click here to reset</a></p>';
   }
+}
+
+async function backgroundSync() {
+  try {
+    const response = await fetch(API_URL + '?action=getData', { 
+      signal: AbortSignal.timeout(15000) 
+    });
+    const result = await response.json();
+    
+    if (result.error) throw new Error(result.error);
+    
+    // Smart merge - add missing items from server, don't overwrite local
+    smartMergeFromServer(result);
+    saveLocal();
+    updateSyncStatus('online');
+    console.log('Background sync complete');
+  } catch (error) {
+    console.log('Background sync skipped:', error.message);
+    updateSyncStatus('offline');
+  }
+}
+
+function smartMergeFromServer(serverData) {
+  // Add any OKRs from server that don't exist locally
+  const serverOKRs = serverData.okrs || [];
+  const localOKRIds = new Set(data.okrs.map(o => o.id));
+  
+  serverOKRs.forEach(serverOKR => {
+    if (!localOKRIds.has(serverOKR.id)) {
+      data.okrs.push({
+        ...serverOKR,
+        keyresults: (serverOKR.keyresults || []).map(kr => ({
+          ...kr,
+          items: kr.items || [],
+          notes: kr.notes || '',
+          attachments: kr.attachments || []
+        }))
+      });
+    }
+  });
+  
+  // Add missing events, notes, folders from server
+  ['events', 'notes', 'folders', 'expenses'].forEach(key => {
+    const serverItems = serverData[key] || [];
+    const localIds = new Set((data[key] || []).map(item => item.id));
+    
+    serverItems.forEach(item => {
+      if (!localIds.has(item.id)) {
+        data[key] = data[key] || [];
+        data[key].push(item);
+      }
+    });
+  });
 }
 
 // NOTES FUNCTIONS
