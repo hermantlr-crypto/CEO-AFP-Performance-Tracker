@@ -1425,8 +1425,7 @@ async function pullFromServer() {
     return;
   }
   
-  const choice = confirm('Pull from server?\n\nOK = Smart merge (keeps your local data + adds new from server)\nCancel = Cancel');
-  if (!choice) return;
+  if (!confirm('Pull from server?\n\nThis will replace your local data with the server data.')) return;
   
   try {
     console.log('Pulling from server...');
@@ -1438,12 +1437,41 @@ async function pullFromServer() {
     
     if (result.error) throw new Error(result.error);
     
-    // Smart merge - add from server, don't overwrite local
-    smartMergeFromServer(result);
+    // Replace local data with server data
+    if (result.okrs && result.okrs.length > 0) {
+      data.okrs = result.okrs.map(okr => ({
+        ...okr,
+        keyresults: (okr.keyresults || []).map(kr => ({
+          ...kr,
+          items: kr.items || [],
+          links: kr.links || [],
+          attachments: kr.attachments || []
+        }))
+      }));
+    }
+    
+    if (result.folders) {
+      data.folders = result.folders;
+    }
+    
+    if (result.events) {
+      data.events = result.events;
+    }
+    
+    if (result.notes) {
+      data.notes = result.notes;
+    }
+    
+    if (result.expenses) {
+      data.expenses = result.expenses;
+    }
+    
     saveLocal();
     render();
     
-    alert(`✅ Merged data from server!`);
+    const okrCount = data.okrs?.length || 0;
+    const folderCount = data.folders?.length || 0;
+    alert(`✅ Pulled from server!\n${okrCount} OKRs, ${folderCount} folders loaded.`);
     updateSyncStatus('online');
   } catch (error) {
     console.error('Pull error:', error);
