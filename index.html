@@ -7,8 +7,14 @@
   <!-- PDF.js library for extracting text from PDFs -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>
-    // Set PDF.js worker
-    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    // Set PDF.js worker (with error handling for mobile)
+    try {
+      if (typeof pdfjsLib !== 'undefined') {
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      }
+    } catch(e) {
+      console.warn('PDF.js not available:', e);
+    }
   </script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -201,9 +207,31 @@
     .att-date { font-size: 10px; opacity: 0.5; }
     .att-view { background: none; border: none; color: #4facfe; cursor: pointer; font-size: 11px; padding: 4px 8px; }
     .att-delete { background: none; border: none; color: #e74c3c; cursor: pointer; font-size: 16px; padding: 4px; }
+    
+    /* Drag and Drop Zone */
+    .drop-zone-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(79,172,254,0.15); z-index: 9999; align-items: center; justify-content: center; pointer-events: none; }
+    .drop-zone-overlay.active { display: flex; }
+    .drop-zone-box { background: rgba(26,26,46,0.95); border: 3px dashed #4facfe; border-radius: 20px; padding: 60px 80px; text-align: center; animation: pulse 1.5s infinite; }
+    .drop-zone-box .icon { font-size: 64px; margin-bottom: 16px; }
+    .drop-zone-box .text { font-size: 24px; font-weight: 600; color: #4facfe; }
+    .drop-zone-box .subtext { font-size: 14px; opacity: 0.7; margin-top: 8px; }
+    @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.02); } }
+    
+    /* Droppable areas highlight */
+    .droppable { transition: all 0.2s; }
+    .droppable.drag-over { background: rgba(79,172,254,0.2) !important; border-color: #4facfe !important; }
   </style>
 </head>
 <body>
+  <!-- Drop Zone Overlay -->
+  <div class="drop-zone-overlay" id="drop-zone-overlay">
+    <div class="drop-zone-box">
+      <div class="icon">📎</div>
+      <div class="text">Drop files here</div>
+      <div class="subtext">PDFs, images, documents</div>
+    </div>
+  </div>
+
   <!-- Hidden file input for KR attachments -->
   <input type="file" id="kr-file-input" style="display:none;" multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt" onchange="handleKRFileUpload(event)">
   
@@ -212,6 +240,16 @@
     <div class="spinner"></div>
     <p class="loading-text">Loading data...</p>
   </div>
+  <script>
+    // Fallback: force hide loading after 5 seconds if something fails
+    setTimeout(function() {
+      var loadEl = document.getElementById('loading');
+      if (loadEl && !loadEl.classList.contains('hidden')) {
+        console.warn('Loading timeout - forcing display');
+        loadEl.classList.add('hidden');
+      }
+    }, 5000);
+  </script>
 
   <!-- Setup Banner -->
   <div class="setup-banner" id="setup-banner" style="display:none;">
@@ -591,11 +629,13 @@
     <div class="calendar-grid" id="calendar-grid"></div>
     <div style="margin-top: 20px; display: flex; gap: 12px; flex-wrap: wrap;">
       <div class="add-btn" onclick="showAddEventModal()">+ Add Event</div>
+      <div class="add-btn" onclick="showImportScheduleModal()" style="background: rgba(46,204,113,0.2); color: #2ecc71;">📋 Import Schedule (Copilot)</div>
       <div class="add-btn" onclick="triggerCalendarImport()" style="background: rgba(155,89,182,0.2); color: #9b59b6;">📥 Import File (.ics)</div>
       <div class="add-btn" onclick="showCalendarURLImport()" style="background: rgba(52,152,219,0.2); color: #3498db;">🔗 Import from URL</div>
       <div class="add-btn" onclick="clearImportedEvents()" style="background: rgba(231,76,60,0.2); color: #e74c3c;">🗑️ Clear Imported</div>
     </div>
     <input type="file" id="ics-file-input" style="display:none;" accept=".ics" onchange="handleICSImport(event)">
+    <input type="file" id="schedule-pdf-input" style="display:none;" accept=".pdf,.txt" onchange="handleSchedulePDFImport(event)">
     <div id="calendar-url-input" style="display:none; margin-top: 12px; padding: 16px; background: rgba(52,152,219,0.1); border-radius: 8px;">
       <p style="font-size: 13px; margin-bottom: 8px;">Paste your Outlook calendar URL (ICS link):</p>
       <div style="display: flex; gap: 8px;">
@@ -605,13 +645,17 @@
       <p style="font-size: 11px; opacity: 0.6; margin-top: 8px;">💡 In Outlook Web: Calendar → Share → Publish → Copy ICS link</p>
     </div>
     <div id="import-status" style="display:none; margin-top: 12px; padding: 12px; border-radius: 8px;"></div>
-    <div class="event-list" id="event-list"></div>
+    <div id="event-list"></div>
   </div>
   
   <!-- Expenses Tab -->
   <div id="expenses" class="tab-content">
     <div class="expense-summary" id="expense-summary"></div>
-    <div class="add-btn" onclick="showAddExpenseModal()" style="margin-bottom: 16px;">+ Add Expense</div>
+    <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px;">
+      <div class="add-btn" onclick="showAddExpenseModal()">+ Add Expense</div>
+      <button onclick="exportExpensesToCSV()" style="padding: 10px 16px; background: rgba(46,204,113,0.2); border: 1px solid rgba(46,204,113,0.3); border-radius: 8px; color: #2ecc71; cursor: pointer; font-size: 14px;">📊 Export CSV</button>
+      <button onclick="exportFinancialReportPDF()" style="padding: 10px 16px; background: rgba(231,76,60,0.2); border: 1px solid rgba(231,76,60,0.3); border-radius: 8px; color: #e74c3c; cursor: pointer; font-size: 14px;">📄 Export PDF</button>
+    </div>
     <table class="expense-table">
       <thead>
         <tr>
@@ -724,10 +768,11 @@
   <div class="modal" id="event-modal">
     <div class="modal-content" style="max-width: 500px;">
       <div class="modal-header">
-        <h2>Add Event</h2>
+        <h2 id="event-modal-title">Add Event</h2>
         <button class="close-modal" onclick="closeModal('event-modal')">×</button>
       </div>
       <div class="modal-body">
+        <input type="hidden" id="event-id">
         <div class="edit-section">
           <label style="font-size: 13px; display: block; margin-bottom: 6px;">Event Title</label>
           <input type="text" id="event-title" style="width: 100%; padding: 10px; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; background: rgba(255,255,255,0.05); color: #e8e8e8;">
@@ -735,6 +780,20 @@
         <div class="edit-section">
           <label style="font-size: 13px; display: block; margin-bottom: 6px;">Date</label>
           <input type="date" id="event-date" style="width: 100%; padding: 10px; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; background: rgba(255,255,255,0.05); color: #e8e8e8;">
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+          <div class="edit-section">
+            <label style="font-size: 13px; display: block; margin-bottom: 6px;">Start Time</label>
+            <input type="time" id="event-start-time" style="width: 100%; padding: 10px; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; background: rgba(255,255,255,0.05); color: #e8e8e8;">
+          </div>
+          <div class="edit-section">
+            <label style="font-size: 13px; display: block; margin-bottom: 6px;">End Time</label>
+            <input type="time" id="event-end-time" style="width: 100%; padding: 10px; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; background: rgba(255,255,255,0.05); color: #e8e8e8;">
+          </div>
+        </div>
+        <div class="edit-section">
+          <label style="font-size: 13px; display: block; margin-bottom: 6px;">Location</label>
+          <input type="text" id="event-location" style="width: 100%; padding: 10px; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; background: rgba(255,255,255,0.05); color: #e8e8e8;">
         </div>
         <div class="edit-section">
           <label style="font-size: 13px; display: block; margin-bottom: 6px;">Type</label>
@@ -744,11 +803,55 @@
             <option value="speaking">Speaking</option>
             <option value="travel">Travel</option>
             <option value="deadline">Deadline</option>
+            <option value="personal">Personal</option>
           </select>
+        </div>
+        <div class="edit-section">
+          <label style="font-size: 13px; display: block; margin-bottom: 6px;">Notes</label>
+          <textarea id="event-notes" rows="3" style="width: 100%; padding: 10px; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; background: rgba(255,255,255,0.05); color: #e8e8e8; resize: vertical;"></textarea>
         </div>
         <div class="btn-row-modal">
           <button class="btn-secondary" onclick="closeModal('event-modal')">Cancel</button>
           <button class="btn-primary" onclick="saveEvent()">Save Event</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Import Schedule Modal -->
+  <div class="modal" id="import-schedule-modal">
+    <div class="modal-content" style="max-width: 700px; max-height: 90vh;">
+      <div class="modal-header">
+        <h2>📋 Import Schedule from Copilot</h2>
+        <button class="close-modal" onclick="closeModal('import-schedule-modal')">×</button>
+      </div>
+      <div class="modal-body" style="overflow-y: auto;">
+        <p style="font-size: 13px; opacity: 0.8; margin-bottom: 16px;">
+          Paste the calendar listing from Copilot below, or upload a PDF/text file.
+        </p>
+        <div class="edit-section">
+          <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+            <button onclick="document.getElementById('schedule-pdf-input').click()" style="padding: 8px 16px; background: rgba(155,89,182,0.2); border: 1px solid rgba(155,89,182,0.3); border-radius: 6px; color: #9b59b6; cursor: pointer;">📄 Upload PDF/TXT</button>
+            <button onclick="document.getElementById('schedule-text').value=''" style="padding: 8px 16px; background: rgba(231,76,60,0.2); border: 1px solid rgba(231,76,60,0.3); border-radius: 6px; color: #e74c3c; cursor: pointer;">🗑️ Clear</button>
+          </div>
+          <textarea id="schedule-text" placeholder="Paste your Copilot calendar output here...
+
+Example format:
+Monday, January 12, 2026
+Staff Meeting
+Time: 9:00 AM – 10:00 AM
+Location: Conference Room
+Invitees: John, Jane
+..." style="width: 100%; height: 300px; padding: 12px; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; background: rgba(255,255,255,0.05); color: #e8e8e8; font-family: monospace; font-size: 12px; resize: vertical;"></textarea>
+        </div>
+        <div id="schedule-preview" style="display: none; margin-top: 16px; padding: 12px; background: rgba(46,204,113,0.1); border-radius: 8px; max-height: 200px; overflow-y: auto;">
+          <h4 style="margin-bottom: 8px; color: #2ecc71;">Preview</h4>
+          <div id="schedule-preview-content"></div>
+        </div>
+        <div class="btn-row-modal" style="margin-top: 16px;">
+          <button class="btn-secondary" onclick="closeModal('import-schedule-modal')">Cancel</button>
+          <button class="btn-secondary" onclick="previewScheduleImport()" style="background: rgba(52,152,219,0.2); color: #3498db;">👁️ Preview</button>
+          <button class="btn-primary" onclick="importScheduleFromText()">📥 Import Events</button>
         </div>
       </div>
     </div>
@@ -1499,7 +1602,8 @@ function exportData() {
     },
     settings: {
       apiUrl: API_URL,
-      currentUser: currentUser
+      currentUser: currentUser,
+      anthropicApiKey: ANTHROPIC_API_KEY
     }
   };
   
@@ -1553,11 +1657,28 @@ function importData(event) {
         data.expenses = mergeArraysById(data.expenses || [], imported.data.expenses);
       }
       
+      // Restore settings including API key
+      if (imported.settings) {
+        if (imported.settings.anthropicApiKey) {
+          ANTHROPIC_API_KEY = imported.settings.anthropicApiKey;
+          localStorage.setItem('anthropic_api_key', ANTHROPIC_API_KEY);
+        }
+        if (imported.settings.apiUrl && !API_URL) {
+          API_URL = imported.settings.apiUrl;
+          localStorage.setItem('afp_api_url', API_URL);
+        }
+        if (imported.settings.currentUser) {
+          currentUser = imported.settings.currentUser;
+          localStorage.setItem('current_user', currentUser);
+          document.getElementById('current-user').textContent = currentUser;
+        }
+      }
+      
       saveLocal();
       render();
       closeModal('app-settings-modal');
       
-      alert('Data imported successfully!');
+      alert('Data imported successfully!' + (imported.settings?.anthropicApiKey ? ' AI key restored.' : ''));
     } catch (err) {
       alert('Error reading backup file: ' + err.message);
     }
@@ -2690,6 +2811,352 @@ function clearImportedEvents() {
   alert(`Cleared ${importedCount} imported events. You can now re-import your calendar.`);
 }
 
+// ============================================
+// SCHEDULE IMPORT FROM COPILOT
+// ============================================
+
+function showImportScheduleModal() {
+  document.getElementById('schedule-text').value = '';
+  document.getElementById('schedule-preview').style.display = 'none';
+  document.getElementById('import-schedule-modal').classList.add('active');
+}
+
+function parseCopilotSchedule(text) {
+  const events = [];
+  const lines = text.split('\n');
+  
+  let currentDate = null;
+  let currentEvent = null;
+  let inFullInvitation = false;
+  let fullInvitationText = '';
+  
+  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 
+                      'July', 'August', 'September', 'October', 'November', 'December'];
+  const monthAbbrev = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                       'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  
+  // Helper to parse date like "Monday, January 12, 2026" or "Monday, Jan 12, 2026"
+  function parseDate(line) {
+    const dateMatch = line.match(/(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+(\w+)\s+(\d+),?\s+(\d{4})/i);
+    if (dateMatch) {
+      let month = monthNames.indexOf(dateMatch[1]);
+      // Try abbreviated month names if full name not found
+      if (month === -1) {
+        month = monthAbbrev.indexOf(dateMatch[1]);
+      }
+      const day = parseInt(dateMatch[2]);
+      const year = parseInt(dateMatch[3]);
+      if (month >= 0 && day > 0 && year > 2000) {
+        return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      }
+    }
+    return null;
+  }
+  
+  // Helper to parse time like "8:00 AM – 9:00 AM" with or without "Time:" prefix
+  function parseTime(line) {
+    // Match with "Time:" prefix
+    let timeMatch = line.match(/Time:\s*(\d{1,2}:\d{2}\s*(?:AM|PM))\s*[–-]\s*(\d{1,2}:\d{2}\s*(?:AM|PM))/i);
+    if (timeMatch) {
+      return { start: timeMatch[1].trim(), end: timeMatch[2].trim() };
+    }
+    // Match standalone time (no "Time:" prefix)
+    timeMatch = line.match(/^(\d{1,2}:\d{2}\s*(?:AM|PM))\s*[–-]\s*(\d{1,2}:\d{2}\s*(?:AM|PM))$/i);
+    if (timeMatch) {
+      return { start: timeMatch[1].trim(), end: timeMatch[2].trim() };
+    }
+    return null;
+  }
+  
+  // Helper to determine event type from title
+  function guessEventType(title) {
+    const t = title.toLowerCase();
+    if (t.includes('board')) return 'board';
+    if (t.includes('speak') || t.includes('panel') || t.includes('webinar') || t.includes('presentation')) return 'speaking';
+    if (t.includes('travel') || t.includes('flight')) return 'travel';
+    if (t.includes('deadline') || t.includes('due')) return 'deadline';
+    return 'meeting';
+  }
+  
+  function saveCurrentEvent() {
+    if (currentEvent && currentEvent.title && currentDate) {
+      currentEvent.date = currentDate;
+      if (inFullInvitation && fullInvitationText) {
+        currentEvent.fullInvitation = fullInvitationText.trim();
+      }
+      currentEvent.type = guessEventType(currentEvent.title);
+      currentEvent.id = 'evt_copilot_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
+      currentEvent.source = 'copilot';
+      events.push({...currentEvent});
+      currentEvent = null;
+      inFullInvitation = false;
+      fullInvitationText = '';
+    }
+  }
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    
+    // Skip empty lines and separator lines (like "----")
+    if (!line || /^-+$/.test(line)) {
+      if (!inFullInvitation) continue;
+    }
+    
+    // Check for date line
+    const newDate = parseDate(line);
+    if (newDate) {
+      saveCurrentEvent();
+      currentDate = newDate;
+      continue;
+    }
+    
+    // Check for time line - can appear with or without event already started
+    const timeInfo = parseTime(line);
+    if (timeInfo) {
+      if (currentEvent) {
+        // Time for existing event
+        currentEvent.time = timeInfo.start + ' - ' + timeInfo.end;
+        currentEvent.startTime = timeInfo.start;
+        currentEvent.endTime = timeInfo.end;
+      } else if (currentDate && i > 0) {
+        // Standalone time after a title - previous line was likely the title
+        const prevLine = lines[i-1].trim();
+        if (prevLine && !prevLine.match(/^-+$/) && !parseDate(prevLine)) {
+          saveCurrentEvent();
+          currentEvent = { 
+            title: prevLine,
+            time: timeInfo.start + ' - ' + timeInfo.end,
+            startTime: timeInfo.start,
+            endTime: timeInfo.end
+          };
+        }
+      }
+      continue;
+    }
+    
+    // Check for organizer
+    if (line.startsWith('Organizer:') && currentEvent) {
+      currentEvent.organizer = line.replace('Organizer:', '').trim();
+      continue;
+    }
+    
+    // Check for location
+    if (line.startsWith('Location:') && currentEvent) {
+      currentEvent.location = line.replace('Location:', '').trim();
+      continue;
+    }
+    
+    // Check for Meeting ID
+    if (line.match(/Meeting ID:/i) && currentEvent) {
+      if (!currentEvent.notes) currentEvent.notes = '';
+      currentEvent.notes += (currentEvent.notes ? '\n' : '') + line;
+      continue;
+    }
+    
+    // Check for Status
+    if (line.startsWith('Status:') && currentEvent) {
+      currentEvent.status = line.replace('Status:', '').trim();
+      continue;
+    }
+    
+    // Check for Category
+    if (line.startsWith('Category:') && currentEvent) {
+      currentEvent.category = line.replace('Category:', '').trim();
+      continue;
+    }
+    
+    // Check for invitees section
+    if (line.startsWith('Invitees:') && currentEvent) {
+      currentEvent.invitees = [];
+      const inviteesText = line.replace('Invitees:', '').trim();
+      if (inviteesText) {
+        // Split by semicolon or comma
+        const inviteesList = inviteesText.split(/[;,]/).map(i => i.trim()).filter(i => i);
+        currentEvent.invitees.push(...inviteesList);
+      }
+      continue;
+    }
+    
+    // Collect invitees (lines starting with •)
+    if ((line.startsWith('•') || line.startsWith('-')) && currentEvent && !inFullInvitation) {
+      if (!currentEvent.invitees) currentEvent.invitees = [];
+      const invitee = line.replace(/^[•\-]\s*/, '').trim();
+      if (invitee && !invitee.startsWith('http')) {
+        currentEvent.invitees.push(invitee);
+      }
+      continue;
+    }
+    
+    // Check for notes
+    if (line.startsWith('Notes:') && currentEvent) {
+      currentEvent.notes = line.replace('Notes:', '').trim();
+      continue;
+    }
+    
+    // Check for conflicts
+    if (line.startsWith('Conflicts with:') && currentEvent) {
+      currentEvent.conflicts = line.replace('Conflicts with:', '').trim();
+      continue;
+    }
+    
+    // Check for Full Invitation section
+    if (line.startsWith('Full Invitation:')) {
+      inFullInvitation = true;
+      fullInvitationText = '';
+      continue;
+    }
+    
+    // If in Full Invitation, collect text until next event
+    if (inFullInvitation) {
+      // Check if this looks like a new event title (line after a date, before Time:)
+      if (currentDate && lines[i+1] && (lines[i+1].trim().startsWith('Time:') || parseTime(lines[i+1].trim()))) {
+        inFullInvitation = false;
+        saveCurrentEvent();
+        currentEvent = { title: line };
+      } else {
+        fullInvitationText += line + '\n';
+      }
+      continue;
+    }
+    
+    // If we have a date and this isn't a known field, it might be an event title
+    // But only if it's not just a separator line and looks like actual content
+    if (currentDate && line && !line.includes(':') && !line.startsWith('•') && !line.startsWith('_') && !/^-+$/.test(line)) {
+      // Check if next line is Time: or a time pattern to confirm this is a title
+      const nextLine = lines[i+1] ? lines[i+1].trim() : '';
+      const nextLineTime = parseTime(nextLine);
+      if (nextLine.startsWith('Time:') || nextLineTime || (i > 0 && parseDate(lines[i-1]))) {
+        // Don't save if this looks like it might be a continuation of event details
+        if (!currentEvent || (currentEvent && currentEvent.time)) {
+          saveCurrentEvent();
+          currentEvent = { title: line };
+        }
+      }
+    }
+  }
+  
+  // Save last event
+  saveCurrentEvent();
+  
+  return events;
+}
+
+function previewScheduleImport() {
+  const text = document.getElementById('schedule-text').value;
+  if (!text.trim()) {
+    alert('Please paste your schedule first.');
+    return;
+  }
+  
+  const events = parseCopilotSchedule(text);
+  const previewEl = document.getElementById('schedule-preview');
+  const contentEl = document.getElementById('schedule-preview-content');
+  
+  if (events.length === 0) {
+    previewEl.style.display = 'block';
+    previewEl.style.background = 'rgba(231,76,60,0.1)';
+    contentEl.innerHTML = '<p style="color: #e74c3c;">No events detected. Make sure the format matches the Copilot output.</p>';
+    return;
+  }
+  
+  previewEl.style.display = 'block';
+  previewEl.style.background = 'rgba(46,204,113,0.1)';
+  contentEl.innerHTML = `
+    <p style="margin-bottom: 8px;"><strong>${events.length} events detected:</strong></p>
+    ${events.map(e => `
+      <div style="padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.1);">
+        <strong>${e.title}</strong><br>
+        <span style="opacity: 0.7; font-size: 12px;">${e.date} ${e.time || ''} ${e.location ? '• ' + e.location : ''}</span>
+      </div>
+    `).join('')}
+  `;
+}
+
+function importScheduleFromText() {
+  const text = document.getElementById('schedule-text').value;
+  if (!text.trim()) {
+    alert('Please paste your schedule first.');
+    return;
+  }
+  
+  const events = parseCopilotSchedule(text);
+  
+  if (events.length === 0) {
+    alert('No events detected. Make sure the format matches the Copilot output.');
+    return;
+  }
+  
+  // Check for duplicates
+  const existingIds = new Set(data.events.map(e => e.date + '_' + e.title));
+  let addedCount = 0;
+  let skippedCount = 0;
+  
+  events.forEach(event => {
+    const eventKey = event.date + '_' + event.title;
+    if (existingIds.has(eventKey)) {
+      skippedCount++;
+    } else {
+      data.events.push(event);
+      existingIds.add(eventKey);
+      addedCount++;
+    }
+  });
+  
+  saveLocal();
+  renderCalendar();
+  renderEvents();
+  
+  closeModal('import-schedule-modal');
+  
+  let message = `✅ Imported ${addedCount} events!`;
+  if (skippedCount > 0) {
+    message += `\n(${skippedCount} duplicates skipped)`;
+  }
+  alert(message);
+}
+
+async function handleSchedulePDFImport(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  
+  const textArea = document.getElementById('schedule-text');
+  
+  if (file.name.endsWith('.txt')) {
+    const text = await file.text();
+    textArea.value = text;
+    previewScheduleImport();
+    return;
+  }
+  
+  if (file.name.endsWith('.pdf')) {
+    // Use PDF.js if available, otherwise inform user
+    if (typeof pdfjsLib !== 'undefined') {
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
+        let fullText = '';
+        
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const textContent = await page.getTextContent();
+          const pageText = textContent.items.map(item => item.str).join(' ');
+          fullText += pageText + '\n';
+        }
+        
+        textArea.value = fullText;
+        previewScheduleImport();
+      } catch (e) {
+        alert('Error reading PDF. Please copy/paste the text instead.');
+      }
+    } else {
+      alert('PDF parsing not available. Please copy/paste the text from your PDF directly.');
+    }
+  }
+  
+  // Reset file input
+  event.target.value = '';
+}
+
 async function handleICSImport(event) {
   const file = event.target.files[0];
   if (!file) return;
@@ -2957,10 +3424,18 @@ function renderEvents() {
   
   const monthEvents = data.events
     .filter(e => {
-      const d = new Date(e.date);
+      const d = new Date(e.date + 'T12:00:00');
       return d.getFullYear() === year && d.getMonth() === month;
     })
-    .sort((a, b) => new Date(a.date) - new Date(b.date));
+    .sort((a, b) => {
+      // Sort by date, then by time
+      const dateCompare = new Date(a.date + 'T12:00:00') - new Date(b.date + 'T12:00:00');
+      if (dateCompare !== 0) return dateCompare;
+      if (a.startTime && b.startTime) {
+        return a.startTime.localeCompare(b.startTime);
+      }
+      return 0;
+    });
   
   if (monthEvents.length === 0) {
     list.innerHTML = '<p style="opacity: 0.5; padding: 20px; text-align: center;">No events this month</p>';
@@ -2968,46 +3443,142 @@ function renderEvents() {
   }
   
   list.innerHTML = monthEvents.map(e => {
-    const date = new Date(e.date);
+    const date = new Date(e.date + 'T12:00:00');
+    const hasDetails = e.time || e.location || e.invitees;
     return `
-      <div class="event-item">
+      <div class="event-item" style="cursor: pointer;" onclick="showEventDetails('${e.id}')">
         <div class="event-date">
           <div class="day">${date.getDate()}</div>
           <div class="month">${date.toLocaleDateString('en-US', { month: 'short' })}</div>
         </div>
-        <div class="event-details">
+        <div class="event-details" style="flex: 1;">
           <div class="event-title">${e.title}</div>
-          <span class="event-type ${e.type}">${e.type}</span>
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <span class="event-type ${e.type}">${e.type}</span>
+            ${e.time ? `<span style="font-size: 11px; opacity: 0.7;">🕐 ${e.time}</span>` : ''}
+            ${e.location ? `<span style="font-size: 11px; opacity: 0.7;">📍 ${e.location.substring(0, 30)}${e.location.length > 30 ? '...' : ''}</span>` : ''}
+          </div>
+          ${e.invitees && e.invitees.length > 0 ? `<div style="font-size: 11px; opacity: 0.6; margin-top: 4px;">👥 ${e.invitees.length} attendees</div>` : ''}
         </div>
-        <button style="background:none;border:none;color:#e74c3c;cursor:pointer;font-size:18px;" onclick="deleteEvent('${e.id}')">×</button>
+        <button style="background:none;border:none;color:#e74c3c;cursor:pointer;font-size:18px;" onclick="event.stopPropagation(); deleteEvent('${e.id}')">×</button>
       </div>
     `;
   }).join('');
 }
 
+function showEventDetails(eventId) {
+  const e = data.events.find(ev => ev.id === eventId);
+  if (!e) return;
+  
+  // Populate modal for editing
+  document.getElementById('event-modal-title').textContent = '✏️ Edit Event';
+  document.getElementById('event-id').value = e.id;
+  document.getElementById('event-title').value = e.title || '';
+  document.getElementById('event-date').value = e.date || '';
+  document.getElementById('event-location').value = e.location || '';
+  document.getElementById('event-type').value = e.type || 'meeting';
+  document.getElementById('event-notes').value = e.notes || '';
+  
+  // Parse time - could be "8:00 AM - 9:00 AM" or "8:00 AM" or "08:00"
+  let startTime = '';
+  let endTime = '';
+  if (e.startTime) {
+    startTime = convertTo24Hour(e.startTime);
+  } else if (e.time) {
+    const timeParts = e.time.split(' - ');
+    startTime = convertTo24Hour(timeParts[0]);
+    if (timeParts[1]) endTime = convertTo24Hour(timeParts[1]);
+  }
+  document.getElementById('event-start-time').value = startTime;
+  document.getElementById('event-end-time').value = endTime || e.endTime ? convertTo24Hour(e.endTime) : '';
+  
+  document.getElementById('event-modal').classList.add('active');
+}
+
+function convertTo24Hour(timeStr) {
+  if (!timeStr) return '';
+  timeStr = timeStr.trim();
+  
+  // Already in 24-hour format
+  if (/^\d{2}:\d{2}$/.test(timeStr)) return timeStr;
+  
+  const match = timeStr.match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
+  if (!match) return '';
+  
+  let hours = parseInt(match[1]);
+  const minutes = match[2];
+  const period = match[3];
+  
+  if (period) {
+    if (period.toUpperCase() === 'PM' && hours !== 12) hours += 12;
+    if (period.toUpperCase() === 'AM' && hours === 12) hours = 0;
+  }
+  
+  return String(hours).padStart(2, '0') + ':' + minutes;
+}
+
+function convertTo12Hour(timeStr) {
+  if (!timeStr) return '';
+  const [hours, minutes] = timeStr.split(':');
+  let h = parseInt(hours);
+  const period = h >= 12 ? 'PM' : 'AM';
+  if (h > 12) h -= 12;
+  if (h === 0) h = 12;
+  return `${h}:${minutes} ${period}`;
+}
+
 function showAddEventModal() {
+  document.getElementById('event-modal-title').textContent = '📅 Add Event';
+  document.getElementById('event-id').value = '';
   document.getElementById('event-title').value = '';
   document.getElementById('event-date').value = '';
+  document.getElementById('event-start-time').value = '';
+  document.getElementById('event-end-time').value = '';
+  document.getElementById('event-location').value = '';
   document.getElementById('event-type').value = 'meeting';
+  document.getElementById('event-notes').value = '';
   document.getElementById('event-modal').classList.add('active');
 }
 
 async function saveEvent() {
-  const event = {
-    id: 'evt_' + Date.now(),
-    title: document.getElementById('event-title').value,
-    date: document.getElementById('event-date').value,
-    type: document.getElementById('event-type').value
-  };
+  const existingId = document.getElementById('event-id').value;
+  const title = document.getElementById('event-title').value.trim();
+  const date = document.getElementById('event-date').value;
   
-  if (!event.title || !event.date) {
-    alert('Please fill in all fields');
+  if (!title || !date) {
+    alert('Please fill in title and date');
     return;
   }
   
-  data.events.push(event);
-  await saveToServer('saveEvent', { event });
+  const startTime = document.getElementById('event-start-time').value;
+  const endTime = document.getElementById('event-end-time').value;
+  const timeDisplay = startTime ? 
+    (endTime ? `${convertTo12Hour(startTime)} - ${convertTo12Hour(endTime)}` : convertTo12Hour(startTime)) : '';
   
+  const eventData = {
+    title: title,
+    date: date,
+    time: timeDisplay,
+    startTime: startTime ? convertTo12Hour(startTime) : '',
+    endTime: endTime ? convertTo12Hour(endTime) : '',
+    location: document.getElementById('event-location').value.trim(),
+    type: document.getElementById('event-type').value,
+    notes: document.getElementById('event-notes').value.trim()
+  };
+  
+  if (existingId) {
+    // Update existing event
+    const index = data.events.findIndex(e => e.id === existingId);
+    if (index !== -1) {
+      data.events[index] = { ...data.events[index], ...eventData };
+    }
+  } else {
+    // Add new event
+    eventData.id = 'evt_' + Date.now();
+    data.events.push(eventData);
+  }
+  
+  saveLocal();
   closeModal('event-modal');
   render();
 }
@@ -3046,10 +3617,10 @@ function renderExpenses() {
   // Table
   const tbody = document.getElementById('expense-tbody');
   tbody.innerHTML = data.expenses
-    .sort((a, b) => new Date(b.date) - new Date(a.date))
+    .sort((a, b) => new Date(b.date + 'T12:00:00') - new Date(a.date + 'T12:00:00'))
     .map(e => `
       <tr>
-        <td>${new Date(e.date).toLocaleDateString()}</td>
+        <td>${new Date(e.date + 'T12:00:00').toLocaleDateString()}</td>
         <td>${e.description}${e.trip ? ` <small style="opacity:0.6">(${e.trip})</small>` : ''}</td>
         <td><span class="expense-category">${e.category}</span></td>
         <td class="expense-amount">$${parseFloat(e.amount).toLocaleString()}</td>
@@ -3307,11 +3878,261 @@ function stopVoiceInput(btn, targetEl, originalPlaceholder) {
 }
 
 // ============================================
+// DRAG AND DROP
+// ============================================
+let dragCounter = 0;
+
+function setupDragAndDrop() {
+  const body = document.body;
+  const overlay = document.getElementById('drop-zone-overlay');
+  
+  // Prevent default drag behaviors
+  ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+    body.addEventListener(eventName, preventDefaults, false);
+  });
+  
+  function preventDefaults(e) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  
+  // Show overlay when dragging files
+  body.addEventListener('dragenter', (e) => {
+    dragCounter++;
+    if (e.dataTransfer.types.includes('Files')) {
+      overlay.classList.add('active');
+    }
+  });
+  
+  body.addEventListener('dragleave', (e) => {
+    dragCounter--;
+    if (dragCounter === 0) {
+      overlay.classList.remove('active');
+    }
+  });
+  
+  body.addEventListener('drop', (e) => {
+    dragCounter = 0;
+    overlay.classList.remove('active');
+    
+    const files = e.dataTransfer.files;
+    if (files.length > 0) {
+      handleDroppedFiles(files);
+    }
+  });
+}
+
+async function handleDroppedFiles(files) {
+  // Check if KR modal is open
+  const krModal = document.getElementById('kr-modal');
+  if (krModal && krModal.classList.contains('active') && currentOKRId && currentKRIndex !== null) {
+    await handleDroppedFilesForKR(files);
+    return;
+  }
+  
+  // Check if folder modal is open
+  const folderModal = document.getElementById('folder-detail-modal');
+  if (folderModal && folderModal.classList.contains('active') && currentFolderId) {
+    await handleDroppedFilesForFolder(files);
+    return;
+  }
+  
+  // Check if AI panel is open
+  const aiPanel = document.getElementById('ai-panel');
+  if (aiPanel && aiPanel.classList.contains('active')) {
+    await handleDroppedFilesForAI(files);
+    return;
+  }
+  
+  // No specific context - ask user what to do
+  const choice = prompt(
+    `You dropped ${files.length} file(s). Where would you like to add them?\n\n` +
+    `1 - Create a new folder with these files\n` +
+    `2 - Cancel\n\n` +
+    `Enter 1 or 2:`
+  );
+  
+  if (choice === '1') {
+    createFolderWithFiles(files);
+  }
+}
+
+async function handleDroppedFilesForKR(files) {
+  const okr = data.okrs.find(o => o.id === currentOKRId);
+  if (!okr || currentKRIndex === null) return;
+  
+  const kr = okr.keyresults[currentKRIndex];
+  if (!kr.attachments) kr.attachments = [];
+  
+  for (let file of files) {
+    await processFileForAttachment(file, kr, currentKRIndex);
+  }
+  
+  saveLocal();
+  render();
+}
+
+async function handleDroppedFilesForFolder(files) {
+  const folder = data.folders.find(f => f.id === currentFolderId);
+  if (!folder) return;
+  if (!folder.items) folder.items = [];
+  
+  for (let file of files) {
+    const item = await processFileForFolder(file);
+    if (item) {
+      folder.items.push(item);
+    }
+  }
+  
+  saveLocal();
+  renderFolderDetail(currentFolderId);
+  alert(`Added ${files.length} file(s) to "${folder.name}"`);
+}
+
+async function handleDroppedFilesForAI(files) {
+  // Add files to AI context for discussion
+  let fileContents = [];
+  
+  for (let file of files) {
+    if (file.type === 'application/pdf') {
+      const arrayBuffer = await file.arrayBuffer();
+      const text = await extractPDFText(arrayBuffer);
+      if (text) {
+        fileContents.push(`[PDF: ${file.name}]\n${text.substring(0, 10000)}`);
+      }
+    } else if (file.type.startsWith('text/') || file.name.endsWith('.txt')) {
+      const text = await file.text();
+      fileContents.push(`[File: ${file.name}]\n${text.substring(0, 10000)}`);
+    } else if (file.type.startsWith('image/')) {
+      fileContents.push(`[Image: ${file.name}] (Image uploaded - describe what you'd like to know about it)`);
+    }
+  }
+  
+  if (fileContents.length > 0) {
+    const input = document.getElementById('ai-chat-input');
+    input.value = `I've uploaded these files:\n\n${fileContents.join('\n\n')}\n\nPlease analyze them.`;
+    input.focus();
+    alert('Files added to AI chat. Press Enter to send.');
+  }
+}
+
+async function processFileForAttachment(file, kr, krIndex) {
+  if (file.size > 5 * 1024 * 1024) {
+    alert(`File "${file.name}" is too large. Max 5MB per file.`);
+    return;
+  }
+  
+  if (file.type === 'application/pdf') {
+    const arrayBuffer = await file.arrayBuffer();
+    const extractedText = await extractPDFText(arrayBuffer);
+    
+    if (extractedText) {
+      kr.attachments.push({
+        name: file.name,
+        type: 'application/pdf',
+        size: file.size,
+        extractedText: extractedText.substring(0, 50000),
+        uploadedBy: currentUser,
+        uploadedAt: new Date().toISOString()
+      });
+    }
+  } else if (file.type === 'text/plain' || file.name.endsWith('.txt')) {
+    const text = await file.text();
+    kr.attachments.push({
+      name: file.name,
+      type: 'text/plain',
+      size: file.size,
+      extractedText: text.substring(0, 50000),
+      uploadedBy: currentUser,
+      uploadedAt: new Date().toISOString()
+    });
+  } else {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      kr.attachments.push({
+        name: file.name,
+        type: file.type,
+        size: file.size,
+        data: e.target.result,
+        uploadedBy: currentUser,
+        uploadedAt: new Date().toISOString()
+      });
+      const attEl = document.getElementById(`kr-att-${krIndex}`);
+      if (attEl) attEl.innerHTML = renderKRAttachments(kr.attachments, krIndex);
+    };
+    reader.readAsDataURL(file);
+  }
+  
+  const attEl = document.getElementById(`kr-att-${krIndex}`);
+  if (attEl) attEl.innerHTML = renderKRAttachments(kr.attachments, krIndex);
+}
+
+async function processFileForFolder(file) {
+  if (file.size > 5 * 1024 * 1024) {
+    alert(`File "${file.name}" is too large. Max 5MB per file.`);
+    return null;
+  }
+  
+  let content = '';
+  let fileData = null;
+  
+  if (file.type === 'application/pdf') {
+    const arrayBuffer = await file.arrayBuffer();
+    content = await extractPDFText(arrayBuffer) || '';
+    content = content.substring(0, 50000);
+  } else if (file.type.startsWith('text/') || file.name.endsWith('.txt')) {
+    content = await file.text();
+    content = content.substring(0, 50000);
+  } else if (file.type.startsWith('image/')) {
+    fileData = await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve(e.target.result);
+      reader.readAsDataURL(file);
+    });
+  }
+  
+  return {
+    id: 'item_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+    name: file.name,
+    type: file.type.startsWith('image/') ? 'image' : file.type === 'application/pdf' ? 'pdf' : 'text',
+    content: content,
+    data: fileData,
+    addedAt: new Date().toISOString()
+  };
+}
+
+async function createFolderWithFiles(files) {
+  const folderName = prompt('Enter a name for the new folder:', `Files ${new Date().toLocaleDateString()}`);
+  if (!folderName) return;
+  
+  const folder = {
+    id: 'folder_' + Date.now(),
+    name: folderName,
+    description: `Created from ${files.length} dropped file(s)`,
+    items: [],
+    createdAt: new Date().toISOString()
+  };
+  
+  for (let file of files) {
+    const item = await processFileForFolder(file);
+    if (item) folder.items.push(item);
+  }
+  
+  data.folders.push(folder);
+  saveLocal();
+  renderFolders();
+  alert(`Created folder "${folderName}" with ${folder.items.length} file(s)`);
+}
+
+// ============================================
 // INITIALIZATION
 // ============================================
 async function init() {
   try {
     document.getElementById('current-user').textContent = currentUser;
+    
+    // Setup drag and drop
+    setupDragAndDrop();
     
     // ALWAYS load local first and render immediately
     loadLocal();
@@ -3393,7 +4214,7 @@ function renderNotes() {
   
   let notes = data.notes || [];
   if (filter) notes = notes.filter(n => n.tag === filter);
-  notes.sort((a, b) => new Date(b.date) - new Date(a.date));
+  notes.sort((a, b) => new Date(b.date + 'T12:00:00') - new Date(a.date + 'T12:00:00'));
   
   if (notes.length === 0) {
     list.innerHTML = '<p style="opacity:0.5;text-align:center;padding:40px;">No notes yet. Click "+ New Note" to create one.</p>';
@@ -3790,6 +4611,30 @@ function showAISettings() {
   document.getElementById('ai-settings-modal').classList.add('active');
 }
 
+// Debug function - run debugKRNotes() in console to see all KR notes
+window.debugKRNotes = function() {
+  console.log('=== All KR Notes ===');
+  data.okrs.forEach((okr, oi) => {
+    console.log(`\nOKR ${oi + 1}: ${okr.category}`);
+    (okr.keyresults || []).forEach((kr, ki) => {
+      if (kr.notes) {
+        console.log(`  KR ${ki + 1}: ${kr.text}`);
+        console.log(`  Notes length: ${kr.notes.length} chars`);
+        console.log(`  Notes preview: ${kr.notes.substring(0, 200)}...`);
+      }
+    });
+  });
+};
+
+// Debug function - run debugAIContext() in console to see full AI context
+window.debugAIContext = function() {
+  const ctx = buildSystemPrompt();
+  console.log('=== Full AI Context ===');
+  console.log('Total length:', ctx.length, 'characters');
+  console.log(ctx);
+  return ctx;
+};
+
 function saveAISettings() {
   ANTHROPIC_API_KEY = document.getElementById('anthropic-api-key').value.trim();
   localStorage.setItem('anthropic_api_key', ANTHROPIC_API_KEY);
@@ -3826,7 +4671,7 @@ function buildSystemPrompt() {
         kr.items.forEach(item => {
           krLine += `\n      • ${item.name} [${item.status || 'In Progress'}]`;
           if (item.notes) {
-            krLine += `: ${item.notes.substring(0, 200)}${item.notes.length > 200 ? '...' : ''}`;
+            krLine += `: ${item.notes.substring(0, 8000)}${item.notes.length > 8000 ? '...' : ''}`;
           }
         });
       }
@@ -3836,12 +4681,16 @@ function buildSystemPrompt() {
         // Include extracted text from PDFs/text files
         kr.attachments.forEach(att => {
           if (att.extractedText) {
-            krLine += `\n    [Content from ${att.name}]: ${att.extractedText.substring(0, 2000)}${att.extractedText.length > 2000 ? '...' : ''}`;
+            krLine += `\n    [Content from ${att.name}]: ${att.extractedText.substring(0, 8000)}${att.extractedText.length > 8000 ? '...' : ''}`;
           }
         });
       }
       // Include notes if any
       if (kr.notes) {
+        // Log long notes for debugging
+        if (kr.notes.length > 500) {
+          console.log(`KR "${kr.text}" has ${kr.notes.length} chars of notes`);
+        }
         krLine += `\n    Notes: ${kr.notes}`;
       }
       return krLine;
@@ -3854,16 +4703,70 @@ function buildSystemPrompt() {
   // Include notes from Notes tab
   let notesContext = '';
   if (data.notes && data.notes.length > 0) {
-    notesContext = '\n\n## Recent Notes\n' + data.notes.slice(0, 5).map(n => 
-      `- ${n.title} (${n.date}): ${n.content.substring(0, 200)}${n.content.length > 200 ? '...' : ''}`
+    notesContext = '\n\n## Notes (' + data.notes.length + ' total)\n' + data.notes.map(n => 
+      `- ${n.title} (${n.date}) [${n.tag}]: ${n.content.substring(0, 300)}${n.content.length > 300 ? '...' : ''}`
     ).join('\n');
   }
 
-  return `You are an AI Performance Coach for Art Taylor, CEO of AFP Global. Today is ${today}.
-Overall Progress: ${overallProgress}%
-${okrDetails}${notesContext}
+  // Include ALL folders and their contents
+  let foldersContext = '';
+  if (data.folders && data.folders.length > 0) {
+    foldersContext = '\n\n## Folders & Documents (' + data.folders.length + ' folders)\n';
+    data.folders.forEach(folder => {
+      foldersContext += `\n### 📁 ${folder.name}`;
+      if (folder.description) foldersContext += ` (${folder.description})`;
+      foldersContext += '\n';
+      if (folder.items && folder.items.length > 0) {
+        folder.items.forEach(item => {
+          foldersContext += `  - ${item.type === 'pdf' ? '📄' : '📝'} ${item.name}\n`;
+          if (item.content) {
+            foldersContext += `    Content: ${item.content.substring(0, 8000)}${item.content.length > 8000 ? '...' : ''}\n`;
+          }
+        });
+      }
+    });
+  }
 
-Be concise. Use specific numbers. Identify risks. Give practical recommendations.`;
+  // Include calendar events (ALL events)
+  let calendarContext = '';
+  if (data.events && data.events.length > 0) {
+    const sortedEvents = [...data.events].sort((a, b) => new Date(a.date + 'T12:00:00') - new Date(b.date + 'T12:00:00'));
+    calendarContext = '\n\n## Calendar Events (' + sortedEvents.length + ' total)\n';
+    sortedEvents.forEach(e => {
+      const eventDate = new Date(e.date + 'T12:00:00');
+      const dateStr = eventDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+      let eventLine = `- ${dateStr}: ${e.title}`;
+      if (e.time) eventLine += ` (${e.time})`;
+      if (e.location) eventLine += ` @ ${e.location.substring(0, 50)}`;
+      if (e.invitees && e.invitees.length > 0) {
+        eventLine += ` [${e.invitees.length} attendees: ${e.invitees.slice(0, 5).join(', ')}${e.invitees.length > 5 ? '...' : ''}]`;
+      }
+      if (e.organizer) eventLine += ` (Organizer: ${e.organizer.split('<')[0].trim()})`;
+      if (e.conflicts) eventLine += ` ⚠️ ${e.conflicts}`;
+      calendarContext += eventLine + '\n';
+    });
+  }
+
+  // Include expenses summary
+  let expensesContext = '';
+  if (data.expenses && data.expenses.length > 0) {
+    const total = data.expenses.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
+    expensesContext = '\n\n## Expenses (Total: $' + total.toLocaleString() + ')\n';
+    data.expenses.slice(0, 15).forEach(e => {
+      expensesContext += `- ${e.date}: ${e.description} - $${e.amount} (${e.category})\n`;
+    });
+  }
+
+  return `You are an AI Performance Coach for Art Taylor, CEO of AFP Global. Today is ${today}.
+You have FULL ACCESS to: OKRs, folders, documents, calendar events, notes, and expenses.
+
+Overall Progress: ${overallProgress}%
+${okrDetails}${foldersContext}${calendarContext}${notesContext}${expensesContext}
+
+Be concise. Use specific numbers. Identify risks. Give practical recommendations.
+When asked about schedule/calendar/meetings, search the Calendar Events.
+When asked about documents/folders/files, search the Folders & Documents.
+When asked about specific people, search all sections for their name.`;
 }
 
 async function cleanupNotes(textareaId) {
@@ -4072,6 +4975,52 @@ async function sendAIMessage() {
     // Check if user is asking about attachments/files/documents
     const isAskingAboutFiles = /attach|file|document|image|photo|pdf|screenshot|picture/i.test(message);
     
+    // Check if user is asking about calendar/schedule
+    const isAskingAboutCalendar = /calendar|schedule|meeting|event|when|tomorrow|today|this week|next week|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december|what.*(do|have).*on|what.*upcoming|who.*meeting/i.test(message);
+    
+    // If asking about calendar, add detailed schedule context
+    let calendarSearchContext = '';
+    if (isAskingAboutCalendar && data.events && data.events.length > 0) {
+      // Search for specific person or date mentioned
+      const personMatch = message.match(/with\s+(\w+(?:\s+\w+)?)/i);
+      const searchTerm = personMatch ? personMatch[1].toLowerCase() : null;
+      
+      let relevantEvents = data.events;
+      
+      // Filter by person if mentioned
+      if (searchTerm) {
+        relevantEvents = data.events.filter(e => {
+          const searchIn = [
+            e.title,
+            e.organizer,
+            ...(e.invitees || [])
+          ].join(' ').toLowerCase();
+          return searchIn.includes(searchTerm);
+        });
+      }
+      
+      // Sort by date
+      relevantEvents = relevantEvents.sort((a, b) => new Date(a.date + 'T12:00:00') - new Date(b.date + 'T12:00:00'));
+      
+      if (relevantEvents.length > 0) {
+        calendarSearchContext = `\n\n## Matching Calendar Events (${relevantEvents.length} found):\n`;
+        relevantEvents.slice(0, 20).forEach(e => {
+          const eventDate = new Date(e.date + 'T12:00:00');
+          const dateStr = eventDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+          calendarSearchContext += `\n### ${e.title}\n`;
+          calendarSearchContext += `- Date: ${dateStr}\n`;
+          if (e.time) calendarSearchContext += `- Time: ${e.time}\n`;
+          if (e.location) calendarSearchContext += `- Location: ${e.location}\n`;
+          if (e.organizer) calendarSearchContext += `- Organizer: ${e.organizer}\n`;
+          if (e.invitees && e.invitees.length > 0) {
+            calendarSearchContext += `- Attendees: ${e.invitees.join(', ')}\n`;
+          }
+          if (e.notes) calendarSearchContext += `- Notes: ${e.notes}\n`;
+          if (e.conflicts) calendarSearchContext += `- ⚠️ Conflicts: ${e.conflicts}\n`;
+        });
+      }
+    }
+    
     // Collect images from KR attachments if relevant
     if (isAskingAboutFiles) {
       for (const okr of data.okrs) {
@@ -4098,11 +5047,12 @@ async function sendAIMessage() {
       }
     }
     
-    // Add the user's text message
-    messageContent.push({ type: 'text', text: message });
+    // Add the user's text message with calendar context if relevant
+    const textMessage = calendarSearchContext ? message + calendarSearchContext : message;
+    messageContent.push({ type: 'text', text: textMessage });
     
     // If no images, just use simple string format
-    const userMessage = messageContent.length === 1 ? message : messageContent;
+    const userMessage = messageContent.length === 1 ? textMessage : messageContent;
     
     chatHistory.push({ role: 'user', content: userMessage });
     
@@ -4113,10 +5063,22 @@ async function sendAIMessage() {
       document.getElementById('ai-typing').querySelector('div:last-child').textContent = '🔍 Searching the web...';
     }
     
+    const systemPrompt = buildSystemPrompt();
+    console.log('📊 AI Context Length:', systemPrompt.length, 'characters');
+    console.log('📋 AI Context Preview (first 500 chars):', systemPrompt.substring(0, 500));
+    console.log('📋 AI Context Preview (last 500 chars):', systemPrompt.substring(systemPrompt.length - 500));
+    
+    // Log if KR notes containing "transcript" are found
+    if (systemPrompt.toLowerCase().includes('transcript')) {
+      console.log('✅ Found "transcript" in AI context');
+    } else {
+      console.log('❌ "transcript" NOT found in AI context');
+    }
+    
     const requestBody = {
       model: 'claude-sonnet-4-20250514',
       max_tokens: 2048,
-      system: buildSystemPrompt(),
+      system: systemPrompt,
       messages: chatHistory
     };
     
@@ -4182,13 +5144,217 @@ function addChatMessage(role, content) {
     lastAIResponse = content;
   }
   
-  // Add save button for AI responses
-  const saveBtn = role === 'assistant' ? `<button onclick="showSaveToFolderModal()" style="margin-top:8px;padding:4px 10px;background:rgba(155,89,182,0.2);border:none;border-radius:12px;color:#9b59b6;cursor:pointer;font-size:11px;">📁 Save to folder</button>` : '';
+  // Add save and export buttons for AI responses
+  const exportBtns = role === 'assistant' ? `
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
+      <button onclick="showSaveToFolderModal()" style="padding:4px 10px;background:rgba(155,89,182,0.2);border:none;border-radius:12px;color:#9b59b6;cursor:pointer;font-size:11px;">📁 Save</button>
+      <button onclick="exportAIResponseToPDF()" style="padding:4px 10px;background:rgba(231,76,60,0.2);border:none;border-radius:12px;color:#e74c3c;cursor:pointer;font-size:11px;">📄 PDF</button>
+      <button onclick="exportAIResponseToCSV()" style="padding:4px 10px;background:rgba(46,204,113,0.2);border:none;border-radius:12px;color:#2ecc71;cursor:pointer;font-size:11px;">📊 CSV</button>
+      <button onclick="copyAIResponse()" style="padding:4px 10px;background:rgba(52,152,219,0.2);border:none;border-radius:12px;color:#3498db;cursor:pointer;font-size:11px;">📋 Copy</button>
+    </div>` : '';
   
-  div.innerHTML = `<div style="width:36px;height:36px;border-radius:50%;background:${bg};display:flex;align-items:center;justify-content:center;flex-shrink:0;">${avatar}</div><div style="max-width:80%;"><div style="padding:12px 16px;border-radius:12px;background:${msgBg};font-size:14px;line-height:1.5;white-space:pre-wrap;">${content}</div>${saveBtn}</div>`;
+  div.innerHTML = `<div style="width:36px;height:36px;border-radius:50%;background:${bg};display:flex;align-items:center;justify-content:center;flex-shrink:0;">${avatar}</div><div style="max-width:80%;"><div style="padding:12px 16px;border-radius:12px;background:${msgBg};font-size:14px;line-height:1.5;white-space:pre-wrap;">${content}</div>${exportBtns}</div>`;
   
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
+}
+
+// Copy AI response to clipboard
+function copyAIResponse() {
+  if (!lastAIResponse) {
+    alert('No AI response to copy.');
+    return;
+  }
+  navigator.clipboard.writeText(lastAIResponse).then(() => {
+    alert('Copied to clipboard!');
+  }).catch(err => {
+    console.error('Copy failed:', err);
+    // Fallback
+    const ta = document.createElement('textarea');
+    ta.value = lastAIResponse;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    alert('Copied to clipboard!');
+  });
+}
+
+// Export AI response to PDF
+function exportAIResponseToPDF() {
+  if (!lastAIResponse) {
+    alert('No AI response to export.');
+    return;
+  }
+  
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>AFP Tracker Report - ${dateStr}</title>
+      <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; line-height: 1.6; }
+        h1 { color: #333; border-bottom: 2px solid #4facfe; padding-bottom: 10px; }
+        .meta { color: #666; font-size: 12px; margin-bottom: 20px; }
+        .content { white-space: pre-wrap; background: #f5f5f5; padding: 20px; border-radius: 8px; }
+        @media print { body { margin: 20px; } }
+      </style>
+    </head>
+    <body>
+      <h1>📊 AFP Performance Report</h1>
+      <div class="meta">Generated: ${dateStr} at ${timeStr}</div>
+      <div class="content">${lastAIResponse.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+    </body>
+    </html>
+  `;
+  
+  const blob = new Blob([html], { type: 'text/html' });
+  const url = URL.createObjectURL(blob);
+  const win = window.open(url, '_blank');
+  win.onload = () => {
+    win.print();
+  };
+}
+
+// Export AI response to CSV (attempts to parse tables/data)
+function exportAIResponseToCSV() {
+  if (!lastAIResponse) {
+    alert('No AI response to export.');
+    return;
+  }
+  
+  let csvContent = '';
+  
+  // Try to extract tabular data from the response
+  const lines = lastAIResponse.split('\n');
+  
+  // Check for bullet points or list items
+  const listItems = lines.filter(l => l.match(/^[\-\•\*]\s|^\d+\./));
+  
+  if (listItems.length > 0) {
+    csvContent = 'Item,Details\n';
+    listItems.forEach((item, i) => {
+      const cleaned = item.replace(/^[\-\•\*]\s*|\d+\.\s*/, '').trim();
+      csvContent += `"${i + 1}","${cleaned.replace(/"/g, '""')}"\n`;
+    });
+  } else {
+    // Just export as plain text with line numbers
+    csvContent = 'Line,Content\n';
+    lines.forEach((line, i) => {
+      if (line.trim()) {
+        csvContent += `"${i + 1}","${line.trim().replace(/"/g, '""')}"\n`;
+      }
+    });
+  }
+  
+  const blob = new Blob([csvContent], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `AFP_Report_${new Date().toISOString().split('T')[0]}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Export expenses to CSV
+function exportExpensesToCSV() {
+  if (!data.expenses || data.expenses.length === 0) {
+    alert('No expenses to export.');
+    return;
+  }
+  
+  let csv = 'Date,Description,Amount,Category,Trip\n';
+  data.expenses.forEach(e => {
+    csv += `"${e.date}","${(e.description || '').replace(/"/g, '""')}","${e.amount}","${e.category || ''}","${(e.trip || '').replace(/"/g, '""')}"\n`;
+  });
+  
+  const total = data.expenses.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
+  csv += `\n"","TOTAL","${total.toFixed(2)}","",""\n`;
+  
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `AFP_Expenses_${new Date().toISOString().split('T')[0]}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Export financial report to PDF
+function exportFinancialReportPDF() {
+  const total = (data.expenses || []).reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
+  const byCategory = {};
+  (data.expenses || []).forEach(e => {
+    byCategory[e.category || 'Other'] = (byCategory[e.category || 'Other'] || 0) + (parseFloat(e.amount) || 0);
+  });
+  
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  
+  let categoryRows = '';
+  Object.entries(byCategory).sort((a, b) => b[1] - a[1]).forEach(([cat, amt]) => {
+    categoryRows += `<tr><td>${cat}</td><td style="text-align:right;">$${amt.toFixed(2)}</td></tr>`;
+  });
+  
+  let expenseRows = '';
+  (data.expenses || []).sort((a, b) => new Date(b.date) - new Date(a.date)).forEach(e => {
+    expenseRows += `<tr><td>${e.date}</td><td>${e.description}</td><td>${e.category}</td><td style="text-align:right;">$${parseFloat(e.amount).toFixed(2)}</td></tr>`;
+  });
+  
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>AFP Financial Report - ${dateStr}</title>
+      <style>
+        body { font-family: Arial, sans-serif; max-width: 900px; margin: 40px auto; padding: 20px; }
+        h1 { color: #333; border-bottom: 2px solid #4facfe; padding-bottom: 10px; }
+        h2 { color: #555; margin-top: 30px; }
+        .summary { background: #f0f7ff; padding: 20px; border-radius: 8px; margin: 20px 0; }
+        .summary .total { font-size: 32px; font-weight: bold; color: #4facfe; }
+        table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #f5f5f5; font-weight: 600; }
+        .meta { color: #666; font-size: 12px; }
+        @media print { body { margin: 20px; } }
+      </style>
+    </head>
+    <body>
+      <h1>💰 AFP Financial Report</h1>
+      <div class="meta">Generated: ${dateStr}</div>
+      
+      <div class="summary">
+        <div>Total Expenses</div>
+        <div class="total">$${total.toFixed(2)}</div>
+        <div style="margin-top:10px;">${(data.expenses || []).length} transactions</div>
+      </div>
+      
+      <h2>By Category</h2>
+      <table>
+        <tr><th>Category</th><th style="text-align:right;">Amount</th></tr>
+        ${categoryRows}
+        <tr style="font-weight:bold;border-top:2px solid #333;"><td>TOTAL</td><td style="text-align:right;">$${total.toFixed(2)}</td></tr>
+      </table>
+      
+      <h2>All Transactions</h2>
+      <table>
+        <tr><th>Date</th><th>Description</th><th>Category</th><th style="text-align:right;">Amount</th></tr>
+        ${expenseRows}
+      </table>
+    </body>
+    </html>
+  `;
+  
+  const blob = new Blob([html], { type: 'text/html' });
+  const url = URL.createObjectURL(blob);
+  const win = window.open(url, '_blank');
+  win.onload = () => {
+    win.print();
+  };
 }
 
 function showSaveToFolderModal() {
@@ -4263,6 +5429,398 @@ async function saveResponseToFolder() {
 }
 
 init();
+</script>
+
+<!-- Floating AI Button and Panel -->
+<style>
+.floating-ai-btn {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 4px 20px rgba(102, 126, 234, 0.4);
+  z-index: 9998;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+.floating-ai-btn:hover {
+  transform: scale(1.1);
+  box-shadow: 0 6px 30px rgba(102, 126, 234, 0.6);
+}
+.floating-ai-btn.has-unread::after {
+  content: '';
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 12px;
+  height: 12px;
+  background: #e74c3c;
+  border-radius: 50%;
+  border: 2px solid #1a1a2e;
+}
+
+.floating-ai-panel {
+  position: fixed;
+  bottom: 100px;
+  right: 24px;
+  width: 400px;
+  max-width: calc(100vw - 48px);
+  height: 500px;
+  max-height: calc(100vh - 150px);
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  border-radius: 16px;
+  box-shadow: 0 10px 50px rgba(0,0,0,0.5);
+  z-index: 9999;
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.1);
+}
+.floating-ai-panel.active {
+  display: flex;
+}
+.floating-ai-header {
+  padding: 16px;
+  background: rgba(0,0,0,0.2);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+.floating-ai-header h3 {
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.floating-ai-close {
+  background: none;
+  border: none;
+  color: #e8e8e8;
+  font-size: 24px;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.floating-ai-close:hover { opacity: 1; }
+.floating-ai-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+.floating-ai-input-area {
+  padding: 12px;
+  border-top: 1px solid rgba(255,255,255,0.1);
+  display: flex;
+  gap: 8px;
+}
+.floating-ai-input {
+  flex: 1;
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.05);
+  color: #e8e8e8;
+  font-size: 14px;
+  resize: none;
+}
+.floating-ai-send {
+  padding: 12px 16px;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  border: none;
+  border-radius: 8px;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+.floating-quick-btns {
+  padding: 8px 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+.floating-quick-btn {
+  padding: 6px 10px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 12px;
+  font-size: 11px;
+  cursor: pointer;
+  color: #e8e8e8;
+}
+.floating-quick-btn:hover {
+  background: rgba(255,255,255,0.1);
+}
+
+@media (max-width: 500px) {
+  .floating-ai-panel {
+    right: 12px;
+    bottom: 90px;
+    width: calc(100vw - 24px);
+    height: calc(100vh - 120px);
+  }
+  .floating-ai-btn {
+    right: 16px;
+    bottom: 16px;
+    width: 56px;
+    height: 56px;
+  }
+}
+</style>
+
+<button class="floating-ai-btn" onclick="toggleFloatingAI()" title="AI Assistant">🤖</button>
+
+<div class="floating-ai-panel" id="floating-ai-panel">
+  <div class="floating-ai-header">
+    <h3>🤖 AI Assistant</h3>
+    <button class="floating-ai-close" onclick="toggleFloatingAI()">×</button>
+  </div>
+  <div class="floating-quick-btns">
+    <button class="floating-quick-btn" onclick="floatingAskAI('How am I tracking overall?')">📊 Progress</button>
+    <button class="floating-quick-btn" onclick="floatingAskAI('What should I focus on?')">🎯 Focus</button>
+    <button class="floating-quick-btn" onclick="floatingAskAI('What meetings do I have this week?')">📅 Schedule</button>
+    <button class="floating-quick-btn" onclick="floatingAskAI('Summarize my folders and documents')">📁 Folders</button>
+    <button class="floating-quick-btn" onclick="floatingAskAI('What are my key risks?')">⚠️ Risks</button>
+  </div>
+  <div class="floating-ai-messages" id="floating-ai-messages">
+    <div style="display: flex; gap: 12px; margin-bottom: 16px;">
+      <div style="width: 32px; height: 32px; border-radius: 50%; background: linear-gradient(135deg, #667eea, #764ba2); display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0;">🤖</div>
+      <div style="background: rgba(255,255,255,0.1); padding: 10px 14px; border-radius: 12px; font-size: 13px; line-height: 1.5;">
+        <p>Hi! I have access to all your OKRs, folders, documents, calendar, and notes. How can I help?</p>
+      </div>
+    </div>
+  </div>
+  <div class="floating-ai-input-area">
+    <textarea class="floating-ai-input" id="floating-ai-input" placeholder="Ask anything..." rows="1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendFloatingAIMessage();}"></textarea>
+    <button class="floating-ai-send" onclick="sendFloatingAIMessage()">→</button>
+  </div>
+</div>
+
+<script>
+let floatingChatHistory = [];
+
+function toggleFloatingAI() {
+  const panel = document.getElementById('floating-ai-panel');
+  panel.classList.toggle('active');
+  if (panel.classList.contains('active')) {
+    document.getElementById('floating-ai-input').focus();
+  }
+}
+
+function floatingAskAI(question) {
+  document.getElementById('floating-ai-input').value = question;
+  sendFloatingAIMessage();
+}
+
+function addFloatingChatMessage(role, content) {
+  const container = document.getElementById('floating-ai-messages');
+  const div = document.createElement('div');
+  div.style.cssText = 'display: flex; gap: 12px; margin-bottom: 16px;';
+  
+  if (role === 'user') {
+    div.innerHTML = `
+      <div style="margin-left: auto; background: linear-gradient(135deg, #4facfe, #00f2fe); padding: 10px 14px; border-radius: 12px; font-size: 13px; max-width: 85%; color: #1a1a2e;">${content}</div>
+    `;
+  } else {
+    div.innerHTML = `
+      <div style="width: 32px; height: 32px; border-radius: 50%; background: linear-gradient(135deg, #667eea, #764ba2); display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0;">🤖</div>
+      <div style="background: rgba(255,255,255,0.1); padding: 10px 14px; border-radius: 12px; font-size: 13px; line-height: 1.5; max-width: 85%;">${content}</div>
+    `;
+  }
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+
+async function sendFloatingAIMessage() {
+  const input = document.getElementById('floating-ai-input');
+  const message = input.value.trim();
+  if (!message) return;
+  
+  if (!ANTHROPIC_API_KEY) {
+    alert('Please set your API key: Go to AI Assistant tab → ⚙️ API Key');
+    return;
+  }
+  
+  addFloatingChatMessage('user', message);
+  input.value = '';
+  
+  // Add typing indicator
+  const typing = document.createElement('div');
+  typing.id = 'floating-typing';
+  typing.style.cssText = 'display: flex; gap: 12px; margin-bottom: 16px;';
+  typing.innerHTML = `
+    <div style="width: 32px; height: 32px; border-radius: 50%; background: linear-gradient(135deg, #667eea, #764ba2); display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0;">🤖</div>
+    <div style="background: rgba(255,255,255,0.1); padding: 10px 14px; border-radius: 12px; font-size: 13px;">Thinking...</div>
+  `;
+  document.getElementById('floating-ai-messages').appendChild(typing);
+  
+  try {
+    floatingChatHistory.push({ role: 'user', content: message });
+    
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 2048,
+        system: buildFullContextPrompt(),
+        messages: floatingChatHistory
+      })
+    });
+    
+    const result = await response.json();
+    document.getElementById('floating-typing')?.remove();
+    
+    if (result.error) {
+      addFloatingChatMessage('assistant', '❌ Error: ' + result.error.message);
+      return;
+    }
+    
+    const aiResponse = result.content[0].text;
+    floatingChatHistory.push({ role: 'assistant', content: aiResponse });
+    
+    // Format response with markdown-like styling
+    const formattedResponse = aiResponse
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\n/g, '<br>');
+    
+    addFloatingChatMessage('assistant', formattedResponse);
+    
+  } catch (error) {
+    document.getElementById('floating-typing')?.remove();
+    addFloatingChatMessage('assistant', '❌ Error: ' + error.message);
+  }
+}
+
+// Build comprehensive context with ALL tracker data
+function buildFullContextPrompt() {
+  const today = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  
+  // Calculate overall progress
+  let totalWeighted = 0, totalWeight = 0;
+  data.okrs.forEach(okr => {
+    const progress = calculateOKRProgress(okr);
+    totalWeighted += progress * (okr.weight || 0);
+    totalWeight += okr.weight || 0;
+  });
+  const overallProgress = totalWeight > 0 ? Math.round(totalWeighted / totalWeight) : 0;
+  
+  // OKR Details with ALL data
+  let okrDetails = data.okrs.map(okr => {
+    const progress = calculateOKRProgress(okr);
+    const krs = (okr.keyresults || []).map(kr => {
+      const krProgress = kr.target > 0 ? Math.round((kr.current / kr.target) * 100) : 0;
+      let krLine = `  - ${kr.text}: ${kr.current}/${kr.target} ${kr.unit} (${krProgress}%)${kr.complete ? ' ✓' : ''}`;
+      if (kr.description) krLine += `\n    Description: ${kr.description}`;
+      if (kr.items && kr.items.length > 0) {
+        krLine += `\n    Items (${kr.items.length}):`;
+        kr.items.forEach(item => {
+          krLine += `\n      • ${item.name} [${item.status || 'In Progress'}]`;
+          if (item.notes) krLine += `: ${item.notes.substring(0, 8000)}${item.notes.length > 8000 ? '...' : ''}`;
+        });
+      }
+      if (kr.attachments && kr.attachments.length > 0) {
+        krLine += `\n    Attachments: ${kr.attachments.map(a => a.name).join(', ')}`;
+        kr.attachments.forEach(att => {
+          if (att.extractedText) {
+            krLine += `\n    [${att.name}]: ${att.extractedText.substring(0, 8000)}${att.extractedText.length > 8000 ? '...' : ''}`;
+          }
+        });
+      }
+      if (kr.notes) krLine += `\n    Notes: ${kr.notes}`;
+      return krLine;
+    }).join('\n');
+    let section = `\n## ${okr.category} (${okr.weight}%) - ${progress}%\n${okr.objective}\n${krs}`;
+    if (okr.notes) section += `\nObjective Notes: ${okr.notes}`;
+    return section;
+  }).join('\n');
+
+  // ALL Folders with contents
+  let foldersContext = '';
+  if (data.folders && data.folders.length > 0) {
+    foldersContext = '\n\n## FOLDERS & DOCUMENTS\n';
+    data.folders.forEach(folder => {
+      foldersContext += `\n### 📁 ${folder.name}`;
+      if (folder.description) foldersContext += ` (${folder.description})`;
+      foldersContext += '\n';
+      if (folder.items && folder.items.length > 0) {
+        folder.items.forEach(item => {
+          foldersContext += `  - ${item.type === 'pdf' ? '📄' : '📝'} ${item.name}\n`;
+          if (item.content) {
+            foldersContext += `    Content: ${item.content.substring(0, 8000)}${item.content.length > 8000 ? '...' : ''}\n`;
+          }
+        });
+      } else {
+        foldersContext += '  (empty)\n';
+      }
+    });
+  }
+
+  // ALL Calendar Events
+  let calendarContext = '';
+  if (data.events && data.events.length > 0) {
+    const sortedEvents = [...data.events].sort((a, b) => new Date(a.date + 'T12:00:00') - new Date(b.date + 'T12:00:00'));
+    calendarContext = '\n\n## CALENDAR EVENTS (' + sortedEvents.length + ' total)\n';
+    sortedEvents.forEach(e => {
+      const eventDate = new Date(e.date + 'T12:00:00');
+      const dateStr = eventDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+      calendarContext += `\n### ${dateStr}: ${e.title}\n`;
+      if (e.time) calendarContext += `- Time: ${e.time}\n`;
+      if (e.location) calendarContext += `- Location: ${e.location}\n`;
+      if (e.organizer) calendarContext += `- Organizer: ${e.organizer}\n`;
+      if (e.invitees && e.invitees.length > 0) {
+        calendarContext += `- Attendees (${e.invitees.length}): ${e.invitees.slice(0, 10).join(', ')}${e.invitees.length > 10 ? '...' : ''}\n`;
+      }
+      if (e.notes) calendarContext += `- Notes: ${e.notes}\n`;
+      if (e.conflicts) calendarContext += `- ⚠️ Conflicts: ${e.conflicts}\n`;
+    });
+  }
+
+  // ALL Notes
+  let notesContext = '';
+  if (data.notes && data.notes.length > 0) {
+    notesContext = '\n\n## NOTES (' + data.notes.length + ' total)\n';
+    data.notes.forEach(n => {
+      notesContext += `\n### ${n.title} (${n.date}) [${n.tag}]\n${n.content.substring(0, 5000)}${n.content.length > 5000 ? '...' : ''}\n`;
+    });
+  }
+
+  // ALL Expenses
+  let expensesContext = '';
+  if (data.expenses && data.expenses.length > 0) {
+    const total = data.expenses.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
+    expensesContext = '\n\n## EXPENSES (Total: $' + total.toLocaleString() + ')\n';
+    data.expenses.slice(0, 20).forEach(e => {
+      expensesContext += `- ${e.date}: ${e.description} - $${e.amount} (${e.category})\n`;
+    });
+  }
+
+  return `You are an AI assistant for Art Taylor, CEO of AFP Global. Today is ${today}.
+You have FULL ACCESS to all tracker data including OKRs, folders, documents, calendar, notes, and expenses.
+
+## OVERALL PROGRESS: ${overallProgress}%
+
+${okrDetails}
+${foldersContext}
+${calendarContext}
+${notesContext}
+${expensesContext}
+
+Be concise, specific, and helpful. Reference specific data when answering. If asked about meetings, schedules, documents, folders, or any tracker content, search through the data above to provide accurate answers.`;
+}
 </script>
 </body>
 </html>
